@@ -8,9 +8,11 @@ public class CPQBundleCeation implements Queueable, Database.AllowsCallouts {
 
     public Id quoteId; 
 
+
+/* The laptopDetailsMap in the code can be obtained via User Input (Lightning Component or a .csv file). 
+It stores the details of the country, quantity of the 13” Laptop and its cost.*/  
     public Map<String, OptionPropertiesWrapper> laptopDetailsMap = new Map<String, OptionPropertiesWrapper>(); 
 
-     
 
     public CPQBundleCreation(Id quoteId,  Map<String, OptionPropertiesWrapper> laptopDetailsMap, Id it_pro_packId, Id laptop_proId, Id laptop_pro_optionId){ 
 
@@ -186,5 +188,3 @@ public class CPQBundleCeation implements Queueable, Database.AllowsCallouts {
     }    
 
 } 
-
- 
