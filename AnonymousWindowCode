@@ -1,0 +1,53 @@
+ //Execute the below code in the Anonymous Window to invoke the CPQ Bundle Creation Class
+
+Id it_pro_packId = PARENT_PRODUCT_ID;
+
+Id laptop_proId = CHILD_PRODUCT_ID; 
+
+Id laptop_pro_optionId = PARENT_CHILD_OPTION_ID; 
+
+Id quoteId = QUOTE_ID; 
+
+ 
+
+OptionPropertiesWrapper opObjUS = new OptionPropertiesWrapper(); 
+
+opObjUS.countryCode = 'United States'; 
+
+List<OptionPropertiesWrapper.Detail> details = new List<OptionPropertiesWrapper.Detail>(); 
+
+//Laptop1 for US 
+
+OptionPropertiesWrapper.Detail detailObjUS1= new OptionPropertiesWrapper.Detail(); 
+
+detailObjUS1.basePay = 1000; 
+
+detailObjUS1.quantity = 2; 
+
+details.add(detailObjUS1); 
+
+//Laptop2 for US 
+
+OptionPropertiesWrapper.Detail detailObjUS2= new OptionPropertiesWrapper.Detail(); 
+
+detailObjUS2.basePay = 2000; 
+
+detailObjUS2.quantity = 3; 
+
+details.add(detailObjUS2); 
+
+ 
+
+opObjUS.laptopDetails = details; 
+
+ 
+
+Map<String, OptionPropertiesWrapper> laptopDetailsMap = new Map<String, OptionPropertiesWrapper>(); 
+
+laptopDetailsMap.put(opObjUS.countryCode, opObjUS); 
+
+//call the CPQBundleCreation 
+
+CPQBundleCreation bundleCreationObj = new CPQBundleCreation(quoteId, laptopDetailsMap, it_pro_packId, laptop_proId,laptop_pro_optionId); 
+
+System.enqueueJob(bundleCreationObj); 
