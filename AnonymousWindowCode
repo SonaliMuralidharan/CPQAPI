@@ -1,4 +1,5 @@
  //Execute the below code in the Anonymous Window to invoke the CPQ Bundle Creation Class
+/*For example, the laptopDetailsMap is constructed programmatically as follows*/
 
 Id it_pro_packId = PARENT_PRODUCT_ID;
 
