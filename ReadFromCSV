@@ -1,0 +1,81 @@
+public class ReadFromCSV {
+    @InvocableMethod(label = 'readCSV')
+    public static void readCSV(List<InputVariables> inputVariables){
+        Map<String, OptionPropertiesWrapper> countryPayMap = new Map<String, OptionPropertiesWrapper>();
+        Map<String,String> countryCodeMap = new Map<String,String>();
+
+        //Get Country-CountryCode Mappings from Global Value set
+        Schema.DescribeFieldResult fieldResult = SBQQ__QuoteLine__c.GP_Country_Attribute__c.getDescribe();
+		List<Schema.PicklistEntry> pleList = fieldResult.getPicklistValues();
+        for(Schema.PicklistEntry ple : pleList){
+            countryCodeMap.put(ple.getLabel(), ple.getValue());
+        }
+        
+        //Get Product & ProductOption Ids
+        List<Product2> products = [SELECT Id FROM Product2 WHERE ProductCode IN ('EOR_SERVICES', 'PROFESSIONAL')];
+        Id eorServiceId = products.get(0).Id;
+        Id professionalId = products.get(0).Id;
+        Id professionalOptionId = [SELECT Id FROM SBQQ__ProductOption__c WHERE SBQQ__ProductCode__c = 'PROFESSIONAL'].Id;
+
+        //Assign input values from Flow 
+        List<String> contentDocIds = inputVariables.get(0).contentDocIds;
+        String quoteId = inputVariables.get(0).recordId;
+
+        //Read .csv file
+        ContentVersion fileVersion = [SELECT Id,VersionData FROM ContentVersion WHERE ContentDocumentId IN :contentDocIds];
+        Blob fileBody = fileVersion.VersionData;
+        String csvFileBody = fileBody.toString();
+
+        //Convert the csv content into counte=ry with Professional details Map
+        List<String> csvRows = csvFileBody.split('\n');
+        for (Integer i=1;i<csvRows.size();i++)
+        {
+            list<String> columnValues = csvRows[i].split(',');
+            String country = columnValues[0].trim();
+            Decimal quantity = Decimal.valueOf(columnValues[1].trim());
+            Decimal basePay = Decimal.valueOf(columnValues[2].trim());
+            Decimal variablePay = Decimal.valueOf(columnValues[3].trim());
+
+            OptionPropertiesWrapper option = new OptionPropertiesWrapper();
+            option.countryCode = countryCodeMap.get(country);
+            OptionPropertiesWrapper.Pay payObj = new OptionPropertiesWrapper.Pay();
+            payObj.basePay = basePay;
+            payObj.variablePay = variablePay;
+            payObj.quantity = quantity;
+
+            //Checking if a professional is already mapped to a Country
+            if(!countryPayMap.containsKey(option.countryCode)){
+                List<OptionPropertiesWrapper.Pay> pays = new List<OptionPropertiesWrapper.Pay>();
+                pays.add(payObj);
+                option.payOfProfessionals = pays;
+                countryPayMap.put(option.countryCode, option);
+            }
+            else {
+                countryPayMap.get(option.countryCode).payOfProfessionals.add(payObj);
+            }
+        }
+        //using CPQ APIs to construct bundles
+        /*ID jobID = System.enqueueJob(new CPQBundleCreation(quoteId, countryPayMap, eorServiceId,professionalId,professionalOptionId));
+        
+        //Schedule an apex to execute the calculator service once the Quote has been saved with the lines
+        ScheduleQuoteSave sch = new ScheduleQuoteSave(jobId,quoteId);
+        Datetime dt = Datetime.now().addMinutes(1);
+        String schCronExp = dt.format('s m H d M \'?\' yyyy');
+        Id schedId = System.Schedule('scheduling Quote Save job at'+System.now().format(),schCronExp,sch);*/
+        
+        CPQBundleCreationBatch batch = new CPQBundleCreationBatch(quoteId, countryPayMap, eorServiceId,professionalId,professionalOptionId);
+        Database.executeBatch(batch, 5);
+        
+        /*ScheduleQuoteSave sch = new ScheduleQuoteSave(jobId, quoteId);
+        sch.checkIfJobCompleted();*/
+
+    }
+
+    public Class InputVariables{
+        @InvocableVariable
+        public List<String> contentDocIds;
+        @InvocableVariable
+        public String recordId;
+    }
+    
+}
