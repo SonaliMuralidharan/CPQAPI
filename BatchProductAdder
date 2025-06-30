@@ -1,0 +1,65 @@
+public class BatchProductAdder implements Database.Batchable<ProductModel>, Database.Stateful, Database.AllowsCallouts{
+    QuoteModel quote;
+    transient List<ProductModel> products;
+    transient Integer groupKey;
+    transient Id quoteId;
+
+    public BatchProductAdder(QuoteModel q, List<ProductModel> prds, Integer gk, Id qId){
+        quote = q;
+        products = prds;
+        groupKey = gk;
+        quoteId = qId;
+    }
+    public Iterable<ProductModel> start(Database.BatchableContext bc){
+        return products;
+    }
+    public void execute(Database.BatchableContext bc, List<ProductModel> products){
+        AddProductsContext ctx = new AddProductsContext(quote, products, groupKey);
+        quote = (QuoteModel) JSON.deserialize((SBQQ.ServiceRouter.load('SBQQ.QuoteAPI.QuoteProductAdder', null, JSON.serialize(ctx))),QuoteModel.class);
+        //quote = (QuoteModel) JSON.deserialize(quoteJSON, QuoteModel.class);
+    }
+    public void finish(Database.BatchableContext bc){
+        QuoteSaver saver = new QuoteSaver();
+       	QuoteModel savedQuote = saver.save(quote);
+        AsyncApexJob apexJob = [SELECT Id ,Status,CompletedDate,ExtendedStatus, 
+                                NumberOfErrors,JobItemsProcessed,TotalJobItems,CreatedBy.Email 
+                                FROM AsyncApexJob 
+                                WHERE Id = :bc.getJobId()];
+
+        //if the job is completed
+        if(apexJob.Status == 'Completed' && apexJob.ExtendedStatus == null){
+            SBQQ__Quote__c quoteRecord = [SELECT Id, Trigger_Calculate__c, Calculation_In_Progress__c 
+            FROM SBQQ__Quote__c WHERE Id = :quoteId WITH USER_MODE];
+            //to trigger calculation on Quote
+            quoteRecord.Trigger_Calculate__c = !quoteRecord.Trigger_Calculate__c;
+            quoteRecord.Calculation_In_Progress__c = false;
+            update as user quoteRecord;
+            CPQBundleCreationEvent__e bundleCreationSuccessEvent = new CPQBundleCreationEvent__e(Message__c = 'Lines have been created...Calculation In Progress', 
+                                                                   Source__c='BatchProductAdder', Status__c = 'Completed');
+            EventBus.publish(bundleCreationSuccessEvent);
+        }
+        //if the job is failed or aborted
+        else if(apexJob.Status == 'Failed' || apexJob.Status == 'Aborted' || apexJob.ExtendedStatus != null){
+            SBQQ__Quote__c quoteRecord = [SELECT Id, Calculation_In_Progress__c FROM SBQQ__Quote__c WHERE Id = :quoteId];
+            //to trigger calculation on Quote
+            quoteRecord.Calculation_In_Progress__c = false;
+            update quoteRecord;
+            CPQBundleCreationEvent__e bundleCreationFailedEvent = new CPQBundleCreationEvent__e(Message__c = apexJob.ExtendedStatus,
+                                                                  Status__c = 'Failed', Source__c = 'BatchProductAdder');
+            EventBus.publish(bundleCreationFailedEvent);
+        }
+
+    }
+     private class AddProductsContext {
+        private QuoteModel quote;
+        private ProductModel[] products;
+        private Integer groupKey;
+        private final Boolean ignoreCalculate = true; //Must be hardcoded to true
+    
+        private AddProductsContext(QuoteModel quote, ProductModel[] products, Integer groupKey) {
+            this.quote = quote;
+            this.products = products;
+            this.groupKey = groupKey;
+        }
+    }
+}
