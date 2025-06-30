@@ -1,0 +1,127 @@
+public class CPQBundleCreationBatch implements Database.Batchable<String>, Database.Stateful, Database.AllowsCallouts{
+    public Id eor_serviceId;
+    public Id profId;
+    public Id prof_optionId;
+    public Id quoteId;
+    public QuoteModel quote;
+    public List<ProductModel> allproducts = new List<ProductModel>();
+    public Map<String, OptionPropertiesWrapper> countryProfessionalsMap = new Map<String, OptionPropertiesWrapper>();
+    
+    public CPQBundleCreationBatch(Id quoteId,  Map<String, OptionPropertiesWrapper> countryProfessionalsMap, Id eor_serviceId, Id profId, Id prof_optionId){
+        this.eor_serviceId = eor_serviceId;
+        this.profId = profId;
+        this.prof_optionId = prof_optionId;
+        this.quoteId = quoteId;
+        this.countryProfessionalsMap = countryProfessionalsMap;
+    }
+    public Iterable<String> start(Database.BatchableContext bc){
+        return this.countryProfessionalsMap.keySet();
+    }
+    public void execute(Database.BatchableContext bc, List<String> countries){
+        Map<String, OptionPropertiesWrapper> countryProfessionalsMapChunk = new Map<String, OptionPropertiesWrapper>();
+        for(String country : countries){
+            countryProfessionalsMapChunk.put(country, this.countryProfessionalsMap.get(country));
+        }
+        createCPQBundlesAPI(this.quoteId, countryProfessionalsMapChunk, this.eor_serviceId, this.profId, this.prof_optionId);
+    }
+    public void finish(Database.BatchableContext bc){
+        //add the configured productmodels to the quote
+        ProductAdder adder = new ProductAdder();
+        adder.add(quote, allproducts, 0, quoteId);
+        AsyncApexJob apexJob = [SELECT Id ,Status,CompletedDate,ExtendedStatus, 
+                                NumberOfErrors,JobItemsProcessed,TotalJobItems,CreatedBy.Email 
+                                FROM AsyncApexJob 
+                                WHERE Id = :bc.getJobId()];
+        
+        //if the job is failed or aborted
+        if(apexJob.Status == 'Failed' || apexJob.Status == 'Aborted'){
+            SBQQ__Quote__c quoteRecord = [SELECT Id, Calculation_In_Progress__c FROM SBQQ__Quote__c WHERE Id = :quoteId WITH USER_MODE];
+            //to trigger calculation on Quote
+            quoteRecord.Calculation_In_Progress__c = false;
+            update as user quoteRecord;
+            CPQBundleCreationEvent__e bundleCreationFailedEvent = new CPQBundleCreationEvent__e(Message__c = apexJob.ExtendedStatus,
+                                                                  Status__c = 'Failed', Source__c = 'CPQBundleCreationBatch');
+            EventBus.publish(bundleCreationFailedEvent);
+            
+        }
+        else if(apexJob.Status == 'Completed'){
+            CPQBundleCreationEvent__e bundleCreationFailedEvent = new CPQBundleCreationEvent__e(Message__c = 'Lines created successfully... Now adding them to the Quote',
+                                                                  Status__c = 'Completed', Source__c = 'CPQBundleCreationBatch');
+            EventBus.publish(bundleCreationFailedEvent);
+        }
+
+    }
+    public void createCPQBundlesAPI(Id quoteId,  Map<String, OptionPropertiesWrapper> countryProfessionalsMapChunk, Id eor_serviceId, Id profId, Id prof_optionId){
+        List<ProductModel> productModels = new List<ProductModel>();
+        QuoteReader qReader = new QuoteReader();
+        quote = qReader.read(quoteId);
+        
+        List<ConfigurationModel> clonedConfigs = new List<ConfigurationModel>();
+        //Query the Option Id to be created dynamically
+
+        SBQQ__ProductOption__c professional = [SELECT Id, SBQQ__AppliedImmediately__c, SBQQ__Bundled__c, SBQQ__ConfiguredSKU__c, 
+                                               SBQQ__DiscountedByPackage__c, SBQQ__Feature__c, SBQQ__Number__c, SBQQ__OptionalSKU__c, 
+                                               SBQQ__ProductName__c, SBQQ__QuantityEditable__c, SBQQ__Quantity__c, SBQQ__Required__c, 
+                                               SBQQ__Selected__c, SBQQ__System__c, SBQQ__Type__c, SBQQ__UpliftedByPackage__c, SBQQ__ProductCode__c,
+                                               GP_Country_Attribute__c, Base__c, Variable__c, Reconfiguration_Required__c 
+                                               FROM SBQQ__ProductOption__c WHERE Id = :prof_optionId WITH USER_MODE];
+        //loop through Countries from .csv file
+        for(String countryCode: countryProfessionalsMapChunk.keySet()){
+            ConfigLoader loader = new ConfigLoader();
+            ProductModel parentProduct = loader.load(eor_serviceId, quote, null);
+            parentProduct.configuration.configurationData.GP_Country_Attribute__c = countryCode;
+            ConfigurationModel professionalConfigModel = new ConfigurationModel();
+            //loop through the options in the above config model
+            for(ConfigurationModel config: parentProduct.configuration.optionConfigurations){
+            //first professional will be automattically seclected in the bundle structure
+                if(config.optionData.SBQQ__ProductCode__c == 'PROFESSIONAL'){
+                    config.optionData.SBQQ__Quantity__c = countryProfessionalsMap.get(countryCode).payOfProfessionals.get(0).quantity;
+                    config.optionData.Base__c = countryProfessionalsMap.get(countryCode).payOfProfessionals.get(0).basePay;
+                    config.optionData.Variable__c = countryProfessionalsMap.get(countryCode).payOfProfessionals.get(0).variablePay;
+                    professionalConfigModel = config;
+                    break;
+                }
+            }
+            //loop through all professionals under a country and dynamically create professionals
+            for(Integer i=1; i< countryProfessionalsMapChunk.get(countryCode).payOfProfessionals.size(); i++){
+                ConfigurationModel clonedConfig = new ConfigurationModel();
+                clonedConfig.configuredProductId = profId;
+                clonedConfig.optionId = prof_optionId;
+                clonedConfig.optionData = new SBQQ__ProductOption__c();
+                clonedConfig.optionData.SBQQ__Quantity__c = countryProfessionalsMap.get(countryCode).payOfProfessionals.get(i).quantity;
+                clonedConfig.optionData.SBQQ__AppliedImmediately__c=professional.SBQQ__AppliedImmediately__c; 
+                clonedConfig.optionData.SBQQ__QuantityEditable__c=professional.SBQQ__QuantityEditable__c;
+                clonedConfig.optionData.SBQQ__DiscountedByPackage__c=professional.SBQQ__DiscountedByPackage__c;
+                clonedConfig.optionData.SBQQ__ConfiguredSKU__c = professional.SBQQ__ConfiguredSKU__c;
+                clonedConfig.optionData.SBQQ__OptionalSKU__c = professional.SBQQ__OptionalSKU__c;
+                clonedConfig.optionData.SBQQ__Feature__c = professional.SBQQ__Feature__c;
+                clonedConfig.optionData.SBQQ__Type__c=professional.SBQQ__Type__c; 
+                clonedConfig.optionData.SBQQ__Required__c=professional.SBQQ__Required__c; 
+                clonedConfig.optionData.Reconfiguration_Required__c=professional.Reconfiguration_Required__c;
+                clonedConfig.optionData.SBQQ__Selected__c=professional.SBQQ__Selected__c; 
+                clonedConfig.optionData.SBQQ__UpliftedByPackage__c=professional.SBQQ__UpliftedByPackage__c;
+                clonedConfig.optionData.SBQQ__Bundled__c=professional.SBQQ__Bundled__c;
+                clonedConfig.optionData.SBQQ__Number__c=professional.SBQQ__Number__c + i;
+                clonedConfig.optionData.SBQQ__System__c=professional.SBQQ__System__c;
+                clonedConfig.optionData.Base__c = countryProfessionalsMap.get(countryCode).payOfProfessionals.get(i).basePay;
+                clonedConfig.optionData.Variable__c = countryProfessionalsMap.get(countryCode).payOfProfessionals.get(i).variablePay;
+                clonedConfig.configurationData = professionalConfigModel.configurationData;
+                clonedConfig.inheritedConfigurationData = professionalConfigModel.inheritedConfigurationData;
+                clonedConfig.optionConfigurations = professionalConfigModel.optionConfigurations;
+                clonedConfig.configured = true;
+                clonedConfig.changedByProductActions = false;
+                clonedConfig.dynamicOptionKey = null;
+                clonedConfig.isUpgrade = false;
+                clonedConfig.isDynamicOption = false;
+                clonedConfig.priceEditable = false;
+                clonedConfig.validationMessages = professionalConfigModel.validationMessages;
+                parentProduct.configuration.optionConfigurations.add(clonedConfig);
+            }       
+            //execute the product scoped product rules  
+            //ConfigValidator validator = new ConfigValidator();
+            //parentProduct.configuration = validator.load(eor_serviceId, quote, parentProduct.configuration, 'Always', null);
+            productModels.add(parentProduct);
+        }
+        allproducts.addAll(productModels);
+    }    
+}
