@@ -1,0 +1,100 @@
+public with sharing class OpportunityTriggerHelper {
+    public static Map<String,Date> accDateMap = new Map<String,Date>();
+    public static List<String> oppList = new List<String>();
+    public static void createMissingContractedPrices(List<String> accIds, List<String> quoteIds, String oppType){        
+        try{
+            List<SBQQ__ContractedPrice__c> newCPs = new List<SBQQ__ContractedPrice__c>();
+            List<String> quotelinesHavingCPs = new List<String>();
+            Map<String,SBQQ__ContractedPrice__c> contractedProductPriceMap = new Map<String,SBQQ__ContractedPrice__c>();
+            List<SBQQ__ContractedPrice__c> existingContractedPrices = [SELECT Id, SBQQ__ExpirationDate__c, GP_Country__c, SBQQ__OriginalQuoteLine__r.SBQQ__ListPrice__c, custom_update_operational__c,CurrencyIsoCode, SBQQ__OriginalQuoteLine__r.SBQQ__Quote__c, SBQQ__EffectiveDate__c,SBQQ__OriginalQuoteLine__c, Percentage_Price_operational__c,SBQQ__OriginalQuoteLine__r.Country_plus_Product__c, SBQQ__OriginalQuoteLine__r.GP_Effective_Date__c, SBQQ__OriginalQuoteLine__r.GP_Expiry_Date__c, SBQQ__Product__c, SBQQ__Price__c, SBQQ__DiscountSchedule__c, SBQQ__Account__c 
+            FROM SBQQ__ContractedPrice__c WHERE SBQQ__Account__c IN :accIds];
+            /* Loop through existing CPs to identify the lines for which CP need to be created
+and to filter out duplicate CPs*/
+            for(SBQQ__ContractedPrice__c cp: existingContractedPrices){
+                quotelinesHavingCPs.add(cp.SBQQ__OriginalQuoteLine__c);
+                contractedProductPriceMap.put(cp.SBQQ__OriginalQuoteLine__r.Country_plus_Product__c,cp);
+            }
+            //Query the QLs that needs CP
+            List<SBQQ__QuoteLine__c> quotelinesNeedingCPs = [SELECT Id,SBQQ__ListPrice__c, GP_Country_Attribute__c, GP_Percentage_Price_after_Expiry_Date__c, GP_Price_after_Expiry_Date__c, SBQQ__NetPrice__c,SBQQ__Product__c,CurrencyIsoCode, SBQQ__DiscountSchedule__c,GP_Percentage_Price__c, SBQQ__Quote__r.SBQQ__Account__c, Country_plus_Product__c, GP_Expiry_Date__c, GP_Effective_Date__c 
+            FROM SBQQ__QuoteLine__c WHERE SBQQ__Quote__c IN :quoteIds AND Id NOT IN :quotelinesHavingCPs AND SBQQ__GenerateContractedPrice__c = 'Do Not Generate'];
+            /* Loop through the QLs
+if a CP exists for the Product (Check the Country_plus_Product) and the Percentage Price, Net Price & Discount Schedule are all the same
+DO NOT CREATE A CP
+else
+CREATE CP
+*/
+            for(SBQQ__QuoteLine__c ql: quotelinesNeedingCPs){
+                SBQQ__ContractedPrice__c cp;
+                String type = (ql.GP_Percentage_Price__c != null) ? 'Percentage Price' : (ql.SBQQ__DiscountSchedule__c != null) ? 'Discount Schedule' : 'Price';
+                cp = OpportunityTriggerHelper.getContractedPrice(ql,type);
+                if(cp!=null){newCPs.add(cp);contractedProductPriceMap.put(ql.Country_plus_Product__c,cp);
+                }
+            }
+            //Upsert the CPs
+            if(!newCPs.isEmpty()){
+                //upsert newCPs;
+                List<Database.upsertResult> uResults = Database.upsert(newCPs,false);
+                List<Error_Handling__c> errorRecordList = new List<Error_Handling__c>();
+                for(Database.upsertResult result:uResults) {
+                    if(!result.isSuccess()){
+                        Error_Handling__c errorRecord = new Error_Handling__c(Error_record__c = result.getId() , Error_Message__c= String.valueOf(result.getErrors()),Error_date_time__c=System.now());
+                        errorRecordList.add(errorRecord) ;
+                    }   
+                }
+                if(!errorRecordList.isEmpty()){insert errorRecordList ; }
+                
+                
+            }
+        }
+        catch(Exception e){sendErrroMail(e.getMessage());
+                    System.debug('Opportunity Trigger Helper Error: '+ e.getMessage());
+
+        }
+    }
+    
+    public static SBQQ__ContractedPrice__c getContractedPrice(SBQQ__QuoteLine__c ql, String type){
+        SBQQ__ContractedPrice__c cp = new SBQQ__ContractedPrice__c();
+        cp.SBQQ__Account__c = ql.SBQQ__Quote__r.SBQQ__Account__c;
+        cp.SBQQ__FilterField__c = 'Country_plus_Product__c';
+        cp.SBQQ__Operator__c = 'equals';
+        cp.SBQQ__FilterValue__c = ql.Country_plus_Product__c;
+        cp.SBQQ__EffectiveDate__c = ql.GP_Effective_Date__c;
+        cp.SBQQ__ExpirationDate__c = ql.GP_Expiry_Date__c;
+        cp.PercentagePrice_after_Expiry_Date_manual__c = ql.GP_Percentage_Price_after_Expiry_Date__c;
+        cp.Price_after_Expiry_Date_manual__c = ql.GP_Price_after_Expiry_Date__c;
+        cp.SBQQ__OriginalQuoteLine__c = ql.Id;
+        cp.Product_custom__c = ql.SBQQ__Product__c;
+        cp.custom_update_operational__c = true;
+        cp.CurrencyIsoCode = ql.CurrencyIsoCode;
+        cp.GP_Country__c = ql.GP_Country_Attribute__c;
+        if((ql.Country_plus_Product__c!=null) && (ql.Country_plus_Product__c.contains('SERVICE_FEE_BASE') || ql.Country_plus_Product__c.contains('SERVICE_FEE_VARIABLE'))){
+            cp.SBQQ__Price__c = ql.SBQQ__ListPrice__c;cp.Percentage_Price_operational__c = ql.GP_Percentage_Price__c;cp.SBQQ__DiscountSchedule__c = ql.SBQQ__DiscountSchedule__c;
+        }
+        else if(ql.Country_plus_Product__c!=null && ql.Country_plus_Product__c.contains('G_P_RECRUIT')){
+            cp.SBQQ__Price__c = ql.SBQQ__NetPrice__c;cp.Percentage_Price_operational__c = ql.GP_Percentage_Price__c;cp.SBQQ__DiscountSchedule__c = ql.SBQQ__DiscountSchedule__c;
+        }
+        else{
+            switch on type {
+                when 'Percentage Price' {
+                    cp.SBQQ__Price__c = 0;
+                    cp.Percentage_Price_operational__c = ql.GP_Percentage_Price__c;
+                }
+                when 'Discount Schedule' {
+                    cp.SBQQ__DiscountSchedule__c = ql.SBQQ__DiscountSchedule__c;
+                }
+                when else{ cp.SBQQ__Price__c = ql.SBQQ__NetPrice__c; }
+            }
+        }
+        return cp;
+    }
+    
+    public static void sendErrroMail(String errorMessage){              
+        Messaging.SingleEmailMessage mail = new Messaging.SingleEmailMessage();
+        String[] toAddresses = new String[] {'c-msonali@g-p.com'};
+            mail.setToAddresses(toAddresses);
+        mail.setSenderDisplayName('Apex error message');
+        mail.setSubject('Error from Org : ' + UserInfo.getOrganizationName());
+        mail.setPlainTextBody(errorMessage);
+        Messaging.sendEmail(new Messaging.SingleEmailMessage[] { mail });
+    }
+}
